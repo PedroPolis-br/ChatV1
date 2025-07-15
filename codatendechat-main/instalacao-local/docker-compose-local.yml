@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  # Cache Redis para desenvolvimento
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redis123
+    volumes:
+      - redis_data:/data
+    networks:
+      - dev_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "auth", "redis123", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Banco PostgreSQL para desenvolvimento
+  db_postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: codatende_local
+      POSTGRES_USER: local_user
+      POSTGRES_PASSWORD: local123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - dev_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U local_user -d codatende_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Migração do banco (executa uma vez)
+  db_migrate:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=development
+      - DB_DIALECT=postgres
+      - DB_HOST=db_postgres
+      - DB_PORT=5432
+      - DB_NAME=codatende_local
+      - DB_USER=local_user
+      - DB_PASS=local123
+      - DB_DEBUG=true
+    depends_on:
+      db_postgres:
+        condition: service_healthy
+    networks:
+      - dev_network
+    command: ["npm", "run", "db:migrate"]
+
+  # Backend para desenvolvimento
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
+      - DB_DIALECT=postgres
+      - DB_HOST=db_postgres
+      - DB_PORT=5432
+      - DB_NAME=codatende_local
+      - DB_USER=local_user
+      - DB_PASS=local123
+      - DB_DEBUG=true
+      - REDIS_URI=redis://:redis123@cache:6379
+      - JWT_SECRET=LOCAL_JWT_SECRET_123456789
+      - JWT_REFRESH_SECRET=LOCAL_REFRESH_SECRET_987654321
+      - BACKEND_URL=http://localhost:8080
+      - FRONTEND_URL=http://localhost:3000
+      - PORT=8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      db_postgres:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      db_migrate:
+        condition: service_completed_successfully
+    networks:
+      - dev_network
+    volumes:
+      - ../backend/public:/app/public
+      - ../backend/src:/app/src
+    # Para desenvolvimento, permite hot reload
+    command: ["npm", "run", "dev:server"]
+
+  # Frontend para desenvolvimento
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_BACKEND_URL=http://localhost:8080
+        - REACT_APP_ENV=development
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - dev_network
+    environment:
+      - NODE_ENV=development
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  dev_network:
+    driver: bridge
